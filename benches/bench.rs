@@ -342,6 +342,7 @@ fn http_custom_headers_round_trip(
 /// Bench WS handshake with different header sizes.
 fn ws_custom_headers_handshake(rt: &TokioRuntime, crit: &mut Criterion, url: &str, name: &str, request: RequestType) {
 	let mut group = crit.benchmark_group(request.group_name(name));
+	// soketto allows header size up to 8 kb - 1...
 	for header_size in [0, KIB, 2 * KIB, 4 * KIB] {
 		group.bench_function(format!("{}kb", header_size / KIB), |b| {
 			b.to_async(rt).iter(|| async move {

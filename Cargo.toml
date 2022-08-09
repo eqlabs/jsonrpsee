@@ -17,3 +17,6 @@ members = [
 	"wasm-tests",
 ]
 resolver = "2"
+
+[patch.crates-io]
+soketto = { path = "/home/niklasad1/Github/soketto" }

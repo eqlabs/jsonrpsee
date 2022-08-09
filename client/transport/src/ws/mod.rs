@@ -288,12 +288,7 @@ impl WsTransportClientBuilder {
 					&target.path_and_query,
 				);
 
-				let headers: Vec<_> = self
-					.headers
-					.iter()
-					.map(|(key, value)| Header { name: key.as_str(), value: value.as_bytes() })
-					.collect();
-				client.set_headers(&headers);
+				client.set_headers(&self.headers);
 
 				// Perform the initial handshake.
 				match client.handshake().await {

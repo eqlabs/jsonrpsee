@@ -1033,10 +1033,13 @@ async fn get_key_and_headers(
 		res
 	});
 
+	let mut headers = HeaderMap::new();
+
+	//let host = req.headers().get("host").unwrap().to_str().unwrap();
+	//let origin = req.headers().get("origin").map(|o| o.to_str().unwrap());
+
 	let host_check = cfg.access_control.verify_host(host);
 	let origin_check = cfg.access_control.verify_origin(origin, host);
-
-	let mut headers = HeaderMap::new();
 
 	host_check.and(origin_check).map(|()| {
 		let key = req.key();
