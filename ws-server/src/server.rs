@@ -27,6 +27,7 @@
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -56,8 +57,8 @@ use jsonrpsee_types::error::{reject_too_big_request, reject_too_many_subscriptio
 use jsonrpsee_types::Params;
 use soketto::connection::Error as SokettoError;
 use soketto::data::ByteSlice125;
-use soketto::handshake::WebSocketKey;
-use soketto::handshake::{server::Response, Server as SokettoServer};
+use soketto::handshake::server::{Header, Response};
+use soketto::handshake::{Server as SokettoServer, WebSocketKey};
 use soketto::Sender;
 use tokio::net::{TcpListener, TcpStream, ToSocketAddrs};
 use tokio_stream::wrappers::IntervalStream;
@@ -1023,35 +1024,29 @@ async fn get_key_and_headers(
 
 	tracing::trace!("Connection request: {:?}", req);
 
-	let host = std::str::from_utf8(req.headers().host).map_err(|e| Error::HttpHeaderRejected("Host", e.to_string()))?;
+	let (key, _, _, raw_headers) = req.into_parts();
 
-	let origin = req.headers().origin.and_then(|h| {
-		let res = std::str::from_utf8(h).ok();
-		if res.is_none() {
-			tracing::warn!("Origin header invalid UTF-8; treated as no Origin header");
-		}
-		res
-	});
+	let headers = into_header_map(&raw_headers);
 
-	let mut headers = HeaderMap::new();
-
-	//let host = req.headers().get("host").unwrap().to_str().unwrap();
-	//let origin = req.headers().get("origin").map(|o| o.to_str().unwrap());
+	let host = headers.get("host").unwrap().to_str().unwrap();
+	let origin = headers.get("origin").map(|o| o.to_str().unwrap());
 
 	let host_check = cfg.access_control.verify_host(host);
 	let origin_check = cfg.access_control.verify_origin(origin, host);
 
-	host_check.and(origin_check).map(|()| {
-		let key = req.key();
+	host_check.and(origin_check).map(|()| (key, headers))
+}
 
-		if let Ok(val) = HeaderValue::from_str(host) {
-			headers.insert(HOST, val);
+fn into_header_map(raw_headers: &[Header]) -> HeaderMap {
+	let mut headers = HeaderMap::with_capacity(raw_headers.len());
+
+	for header in raw_headers.iter() {
+		let k = http::header::HeaderName::from_str(header.name);
+		let v = http::HeaderValue::from_bytes(header.value);
+
+		if let (Ok(k), Ok(v)) = (k, v) {
+			headers.append(k, v);
 		}
-
-		if let Some(Ok(val)) = origin.map(HeaderValue::from_str) {
-			headers.insert(ORIGIN, val);
-		}
-
-		(key, headers)
-	})
+	}
+	headers
 }
