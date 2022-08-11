@@ -72,9 +72,15 @@ pub enum Error {
 	/// The background task has been terminated.
 	#[error("The background task been terminated because: {0}; restart required")]
 	RestartNeeded(String),
-	/// Failed to parse the data.
+	/// Failed to serialize data.
 	#[error("Parse error: {0}")]
-	ParseError(#[from] serde_json::Error),
+	Serialization(#[from] serde_json::Error),
+	/// Failed to deserialize data
+	#[error("
+		Failed to decode response as rust type: `{0}`. 
+		Make sure that you have used correct type if you are unsure which type to use then use `serde_json::Value` or enable trace logging to inspect the responses.
+	")]
+	Deserialization(&'static str),
 	/// Invalid subscription ID.
 	#[error("Invalid subscription ID")]
 	InvalidSubscriptionId,
@@ -228,4 +234,9 @@ impl From<hyper::Error> for Error {
 	fn from(hyper_err: hyper::Error) -> Error {
 		Error::Transport(hyper_err.into())
 	}
+}
+
+/// Print a more user-friendly error message than the default serde_json::Error.
+pub fn ignore_serde_error_to_decode_error<T>() -> Error {
+	Error::Deserialization(std::any::type_name::<T>())
 }

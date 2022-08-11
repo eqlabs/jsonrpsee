@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task;
 
-use crate::error::Error;
+use crate::error::{ignore_serde_error_to_decode_error, Error};
 use async_trait::async_trait;
 use core::marker::PhantomData;
 use futures_channel::{mpsc, oneshot};
@@ -339,7 +339,7 @@ where
 		let n = futures_util::ready!(self.notifs_rx.poll_next_unpin(cx));
 		let res = n.map(|n| match serde_json::from_value::<Notif>(n) {
 			Ok(parsed) => Ok(parsed),
-			Err(e) => Err(Error::ParseError(e)),
+			Err(_) => Err(ignore_serde_error_to_decode_error::<Notif>()),
 		});
 		task::Poll::Ready(res)
 	}

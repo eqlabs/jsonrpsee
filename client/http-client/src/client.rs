@@ -32,6 +32,7 @@ use crate::types::{ErrorResponse, Id, NotificationSer, ParamsSer, RequestSer, Re
 use async_trait::async_trait;
 use hyper::http::HeaderMap;
 use jsonrpsee_core::client::{CertificateStore, ClientT, IdKind, RequestIdManager, Subscription, SubscriptionClientT};
+use jsonrpsee_core::error::ignore_serde_error_to_decode_error;
 use jsonrpsee_core::tracing::RpcTracing;
 use jsonrpsee_core::{Error, TEN_MB_SIZE_BYTES};
 use jsonrpsee_types::error::CallError;
@@ -169,7 +170,7 @@ impl ClientT for HttpClient {
 	async fn notification<'a>(&self, method: &'a str, params: Option<ParamsSer<'a>>) -> Result<(), Error> {
 		let trace = RpcTracing::notification(method);
 		async {
-			let notif = serde_json::to_string(&NotificationSer::new(method, params)).map_err(Error::ParseError)?;
+			let notif = serde_json::to_string(&NotificationSer::new(method, params)).map_err(Error::Serialization)?;
 
 			let fut = self.transport.send(notif);
 
@@ -194,7 +195,7 @@ impl ClientT for HttpClient {
 		let trace = RpcTracing::method_call(method);
 
 		async {
-			let raw = serde_json::to_string(&request).map_err(Error::ParseError)?;
+			let raw = serde_json::to_string(&request).map_err(Error::Serialization)?;
 
 			let fut = self.transport.send_and_read_body(raw);
 			let body = match tokio::time::timeout(self.request_timeout, fut).await {
@@ -210,7 +211,8 @@ impl ClientT for HttpClient {
 			let response: Response<_> = match serde_json::from_slice(&body) {
 				Ok(response) => response,
 				Err(_) => {
-					let err: ErrorResponse = serde_json::from_slice(&body).map_err(Error::ParseError)?;
+					let err: ErrorResponse =
+						serde_json::from_slice(&body).map_err(|_| ignore_serde_error_to_decode_error::<R>())?;
 					return Err(Error::Call(CallError::Custom(err.error_object().clone().into_owned())));
 				}
 			};
@@ -246,7 +248,7 @@ impl ClientT for HttpClient {
 			}
 
 			let fut =
-				self.transport.send_and_read_body(serde_json::to_string(&batch_request).map_err(Error::ParseError)?);
+				self.transport.send_and_read_body(serde_json::to_string(&batch_request).map_err(Error::Serialization)?);
 
 			let body = match tokio::time::timeout(self.request_timeout, fut).await {
 				Ok(Ok(body)) => body,
@@ -257,7 +259,7 @@ impl ClientT for HttpClient {
 			let rps: Vec<Response<_>> =
 				serde_json::from_slice(&body).map_err(|_| match serde_json::from_slice::<ErrorResponse>(&body) {
 					Ok(e) => Error::Call(CallError::Custom(e.error_object().clone().into_owned())),
-					Err(e) => Error::ParseError(e),
+					Err(_) => ignore_serde_error_to_decode_error::<R>(),
 				})?;
 
 			// NOTE: `R::default` is placeholder and will be replaced in loop below.
