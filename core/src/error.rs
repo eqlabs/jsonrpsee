@@ -76,10 +76,10 @@ pub enum Error {
 	#[error("Parse error: {0}")]
 	Serialization(#[from] serde_json::Error),
 	/// Failed to deserialize data
-	#[error("
-		Failed to decode response as rust type: `{0}`. 
-		Make sure that you have used correct type if you are unsure which type to use then use `serde_json::Value` or enable trace logging to inspect the responses.
-	")]
+	#[error(
+		"Failed to decode response as rust type: `{0}`. \
+		Make sure that you have used correct type if you are unsure which type to use then use `serde_json::Value` or enable trace logging to inspect the responses"
+	)]
 	Deserialization(&'static str),
 	/// Invalid subscription ID.
 	#[error("Invalid subscription ID")]

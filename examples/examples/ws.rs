@@ -42,8 +42,8 @@ async fn main() -> anyhow::Result<()> {
 	let url = format!("ws://{}", addr);
 
 	let client = WsClientBuilder::default().build(&url).await?;
-	let response: String = client.request("say_hello", None).await?;
-	tracing::info!("response: {:?}", response);
+	let response = client.request::<u8>("say_hello", None).await.unwrap_err();
+	tracing::info!("response: {}", response);
 
 	Ok(())
 }
