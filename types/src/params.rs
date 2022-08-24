@@ -36,6 +36,7 @@ use beef::Cow;
 use serde::de::{self, Deserializer, Unexpected, Visitor};
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use serde_json::Value as JsonValue;
 
 /// JSON-RPC v2 marker type.
@@ -482,8 +483,18 @@ impl NamedParamsBuilder {
 	}
 
 	/// Finish the building process and return a JSON compatible string.
-	pub fn build(self) -> String {
-		self.0.build()
+	pub fn build(self) -> NamedParams {
+		NamedParams(self.0.build())
+	}
+}
+
+/// Named RPC parameters stored as a JSON Map object `{ key: value }`.
+#[derive(Debug)]
+pub struct NamedParams(String);
+
+impl ToRpcParams for NamedParams {
+	fn to_rpc_params(self) -> Result<Box<RawValue>, serde_json::Error> {
+		RawValue::from_string(self.0)
 	}
 }
 
@@ -504,9 +515,27 @@ impl UnnamedParamsBuilder {
 	}
 
 	/// Finish the building process and return a JSON compatible string.
-	pub fn build(self) -> String {
-		self.0.build()
+	pub fn build(self) -> UnnamedParams {
+		UnnamedParams(self.0.build())
 	}
+}
+
+/// Unnamed RPC parameters stored as a JSON Array object `[ value0, value1, .., valueN ]`.
+#[derive(Debug)]
+pub struct UnnamedParams(String);
+
+impl ToRpcParams for UnnamedParams {
+	fn to_rpc_params(self) -> Result<Box<RawValue>, serde_json::Error> {
+		RawValue::from_string(self.0)
+	}
+}
+
+/// Marker trait for types that can be serialized as JSON compatible strings.
+///
+/// This trait ensures the correctness of the RPC parameters.
+pub trait ToRpcParams {
+	/// Consume and serialize the type as a JSON raw value.
+	fn to_rpc_params(self) -> Result<Box<RawValue>, serde_json::Error>;
 }
 
 #[cfg(test)]
