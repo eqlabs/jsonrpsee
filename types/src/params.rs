@@ -416,6 +416,7 @@ impl<'a> Id<'a> {
 ///   1. Other serialization methods than `serde_json::to_writer` would internally
 ///      have an extra heap allocation for temporarily holding the value in memory.
 ///   2. `io::Write` is not implemented for `String` required for serialization.
+#[derive(Debug)]
 struct ParamsBuilder {
 	bytes: Vec<u8>,
 	end: char,
@@ -460,6 +461,51 @@ impl ParamsBuilder {
 
 		// Safety: This is safe because we do not emit invalid UTF-8.
 		unsafe { String::from_utf8_unchecked(self.bytes) }
+	}
+}
+
+/// Parameter builder that serializes named value parameters to a JSON compatible string.
+/// This is the equivalent of a JSON Map object `{ key: value }`.
+#[derive(Debug)]
+pub struct NamedParamsBuilder(ParamsBuilder);
+
+impl NamedParamsBuilder {
+	/// Construct a new [`NamedParamsBuilder`].
+	pub fn new() -> Self {
+		Self(ParamsBuilder::new('{', '}'))
+	}
+
+	/// Insert a named value (key, value) pair into the builder.
+	/// The _name_ and _value_ are delimited by the `:` token.
+	pub fn insert<P: Serialize>(&mut self, name: &str, value: P) -> Result<(), serde_json::Error> {
+		self.0.insert_named(name, value)
+	}
+
+	/// Finish the building process and return a JSON compatible string.
+	pub fn build(self) -> String {
+		self.0.build()
+	}
+}
+
+/// Parameter builder that serializes plain value parameters to a JSON compatible string.
+/// This is the equivalent of a JSON Array object `[ value0, value1, .., valueN ]`.
+#[derive(Debug)]
+pub struct UnnamedParamsBuilder(ParamsBuilder);
+
+impl UnnamedParamsBuilder {
+	/// Construct a new [`UnnamedParamsBuilder`].
+	pub fn new() -> Self {
+		Self(ParamsBuilder::new('[', ']'))
+	}
+
+	/// Insert a plain value into the builder.
+	pub fn insert<P: Serialize>(&mut self, value: P) -> Result<(), serde_json::Error> {
+		self.0.insert(value)
+	}
+
+	/// Finish the building process and return a JSON compatible string.
+	pub fn build(self) -> String {
+		self.0.build()
 	}
 }
 
