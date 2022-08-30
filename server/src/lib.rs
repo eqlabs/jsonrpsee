@@ -33,6 +33,7 @@
 extern crate alloc;
 
 mod future;
+#[cfg(feature = "http")]
 pub mod middleware;
 mod server;
 mod transport;

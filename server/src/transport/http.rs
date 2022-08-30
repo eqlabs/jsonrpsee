@@ -1,12 +1,15 @@
 use std::convert::Infallible;
+use std::error::Error as StdError;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
-use futures_util::TryStreamExt;
+use futures_util::{Future, TryStreamExt};
 use http::Method;
 use jsonrpsee_core::error::GenericTransportError;
-use jsonrpsee_core::http_helpers::read_body;
-use jsonrpsee_core::logger::{self, HttpLogger as Logger};
+use jsonrpsee_core::http_helpers::{self, read_body};
+use jsonrpsee_core::logger::{self, HttpLogger, WsLogger};
 use jsonrpsee_core::server::helpers::{prepare_error, BatchResponse, BatchResponseBuilder, MethodResponse};
 use jsonrpsee_core::server::rpc_module::MethodKind;
 use jsonrpsee_core::server::{resource_limiting::Resources, rpc_module::Methods};
@@ -16,6 +19,8 @@ use jsonrpsee_types::error::{ErrorCode, BATCHES_NOT_SUPPORTED_CODE, BATCHES_NOT_
 use jsonrpsee_types::{ErrorObject, Id, Notification, Params, Request};
 use tokio::sync::OwnedSemaphorePermit;
 use tracing_futures::Instrument;
+
+use crate::server::ServiceData;
 
 type Notif<'a> = Notification<'a, Option<&'a JsonRawValue>>;
 
@@ -50,7 +55,7 @@ pub(crate) async fn reject_connection(socket: tokio::net::TcpStream) {
 }
 
 #[derive(Debug)]
-pub(crate) struct ProcessValidatedRequest<L: Logger> {
+pub(crate) struct ProcessValidatedRequest<L: HttpLogger> {
 	pub(crate) request: hyper::Request<hyper::Body>,
 	pub(crate) logger: L,
 	pub(crate) methods: Methods,
@@ -63,7 +68,7 @@ pub(crate) struct ProcessValidatedRequest<L: Logger> {
 }
 
 /// Process a verified request, it implies a POST request with content type JSON.
-pub(crate) async fn process_validated_request<L: Logger>(
+pub(crate) async fn process_validated_request<L: HttpLogger>(
 	input: ProcessValidatedRequest<L>,
 ) -> hyper::Response<hyper::Body> {
 	let ProcessValidatedRequest {
@@ -135,13 +140,13 @@ pub(crate) async fn process_validated_request<L: Logger>(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Batch<'a, L: Logger> {
+pub(crate) struct Batch<'a, L: HttpLogger> {
 	data: Vec<u8>,
 	call: CallData<'a, L>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct CallData<'a, L: Logger> {
+pub(crate) struct CallData<'a, L: HttpLogger> {
 	conn_id: usize,
 	logger: &'a L,
 	methods: &'a Methods,
@@ -152,7 +157,7 @@ pub(crate) struct CallData<'a, L: Logger> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Call<'a, L: Logger> {
+pub(crate) struct Call<'a, L: HttpLogger> {
 	params: Params<'a>,
 	name: &'a str,
 	call: CallData<'a, L>,
@@ -164,7 +169,7 @@ pub(crate) struct Call<'a, L: Logger> {
 // complete batch response back to the client over `tx`.
 pub(crate) async fn process_batch_request<L>(b: Batch<'_, L>) -> BatchResponse
 where
-	L: Logger,
+	L: HttpLogger,
 {
 	let Batch { data, call } = b;
 
@@ -211,7 +216,7 @@ where
 	BatchResponse::error(id, ErrorObject::from(code))
 }
 
-pub(crate) async fn process_single_request<L: Logger>(data: Vec<u8>, call: CallData<'_, L>) -> MethodResponse {
+pub(crate) async fn process_single_request<L: HttpLogger>(data: Vec<u8>, call: CallData<'_, L>) -> MethodResponse {
 	if let Ok(req) = serde_json::from_slice::<Request>(&data) {
 		let trace = RpcTracing::method_call(&req.method);
 		async {
@@ -236,7 +241,7 @@ pub(crate) async fn process_single_request<L: Logger>(data: Vec<u8>, call: CallD
 	}
 }
 
-pub(crate) async fn execute_call<L: Logger>(c: Call<'_, L>) -> MethodResponse {
+pub(crate) async fn execute_call<L: HttpLogger>(c: Call<'_, L>) -> MethodResponse {
 	let Call { name, id, params, call } = c;
 	let CallData { resources, methods, logger, max_response_body_size, max_log_length, conn_id, request_start } = call;
 
@@ -289,7 +294,7 @@ pub(crate) async fn execute_call<L: Logger>(c: Call<'_, L>) -> MethodResponse {
 	response
 }
 
-pub(crate) struct HandleRequest<L: Logger> {
+pub(crate) struct HandleRequest<L: HttpLogger> {
 	pub(crate) remote_addr: SocketAddr,
 	pub(crate) methods: Methods,
 	pub(crate) resources: Resources,
@@ -301,7 +306,7 @@ pub(crate) struct HandleRequest<L: Logger> {
 	pub(crate) conn: Arc<OwnedSemaphorePermit>,
 }
 
-pub(crate) async fn handle_request<L: Logger>(
+pub(crate) async fn handle_request<L: HttpLogger>(
 	request: hyper::Request<hyper::Body>,
 	input: HandleRequest<L>,
 ) -> hyper::Response<hyper::Body> {
@@ -343,6 +348,148 @@ pub(crate) async fn handle_request<L: Logger>(
 	drop(conn);
 
 	res
+}
+
+// JsonRPSee service compatible with `tower`.
+///
+/// # Note
+/// This is similar to [`hyper::service::service_fn`].
+#[derive(Debug)]
+pub struct TowerService<HL: HttpLogger, WL: WsLogger> {
+	pub(crate) inner: ServiceData<HL, WL>,
+}
+
+impl<HL: HttpLogger, WL: WsLogger> hyper::service::Service<hyper::Request<hyper::Body>> for TowerService<HL, WL> {
+	type Response = hyper::Response<hyper::Body>;
+
+	// The following associated type is required by the `impl<B, U, L: Logger> Server<B, L>` bounds.
+	// It satisfies the server's bounds when the `tower::ServiceBuilder<B>` is not set (ie `B: Identity`).
+	type Error = Box<dyn StdError + Send + Sync + 'static>;
+
+	type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+	/// Opens door for back pressure implementation.
+	fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
+		Poll::Ready(Ok(()))
+	}
+
+	#[cfg(all(feature = "http", not(feature = "ws")))]
+	fn call(&mut self, request: hyper::Request<hyper::Body>) -> Self::Future {
+		use transport::http;
+
+		tracing::trace!("{:?}", request);
+
+		let host = match http_helpers::read_header_value(request.headers(), "host") {
+			Some(host) => host,
+			None => return async { Ok(http::response::malformed()) }.boxed(),
+		};
+		let maybe_origin = http_helpers::read_header_value(request.headers(), "origin");
+
+		if let Err(e) = self.inner.acl.verify_host(host) {
+			tracing::warn!("Denied request: {}", e);
+			return async { Ok(http::response::host_not_allowed()) }.boxed();
+		}
+
+		if let Err(e) = self.inner.acl.verify_origin(maybe_origin, host) {
+			let maybe_origin = maybe_origin.map(|o| o.to_owned());
+			tracing::warn!("Denied request: {}", e);
+			return async { Ok(http::response::origin_rejected(maybe_origin)) }.boxed();
+		}
+
+		// The request wasn't an upgrade request; let's treat it as a standard HTTP request:
+		let data = http::HandleRequest {
+			remote_addr: self.inner.remote_addr,
+			methods: self.inner.methods.clone(),
+			resources: self.inner.resources.clone(),
+			max_request_body_size: self.inner.max_request_body_size,
+			max_response_body_size: self.inner.max_response_body_size,
+			max_log_length: self.inner.max_log_length,
+			batch_requests_supported: self.inner.batch_requests_supported,
+			logger: self.inner.http_logger.clone(),
+			conn: self.inner.conn.clone(),
+		};
+
+		Box::pin(http::handle_request(request, data).map(Ok))
+	}
+
+	#[cfg(feature = "full")]
+	fn call(&mut self, request: hyper::Request<hyper::Body>) -> Self::Future {
+		use crate::transport::{http, ws};
+		use futures_util::future::FutureExt;
+		use futures_util::io::{BufReader, BufWriter};
+		use soketto::handshake::http::is_upgrade_request;
+		use tokio_util::compat::TokioAsyncReadCompatExt;
+
+		tracing::trace!("{:?}", request);
+
+		let host = match http_helpers::read_header_value(request.headers(), "host") {
+			Some(host) => host,
+			None => return async { Ok(http::response::malformed()) }.boxed(),
+		};
+		let maybe_origin = http_helpers::read_header_value(request.headers(), "origin");
+
+		if let Err(e) = self.inner.acl.verify_host(host) {
+			tracing::warn!("Denied request: {}", e);
+			return async { Ok(http::response::host_not_allowed()) }.boxed();
+		}
+
+		if let Err(e) = self.inner.acl.verify_origin(maybe_origin, host) {
+			let maybe_origin = maybe_origin.map(|o| o.to_owned());
+			tracing::warn!("Denied request: {}", e);
+			return async { Ok(http::response::origin_rejected(maybe_origin)) }.boxed();
+		}
+
+		if is_upgrade_request(&request) {
+			let mut server = soketto::handshake::http::Server::new();
+
+			let response = match server.receive_request(&request) {
+				Ok(response) => {
+					self.inner.ws_logger.on_connect(self.inner.remote_addr, request.headers());
+
+					let data = self.inner.clone();
+					tokio::spawn(async move {
+						let upgraded = match hyper::upgrade::on(request).await {
+							Ok(u) => u,
+							Err(e) => {
+								tracing::warn!("Could not upgrade connection: {}", e);
+								return;
+							}
+						};
+
+						let stream = BufReader::new(BufWriter::new(upgraded.compat()));
+						let mut ws_builder = server.into_builder(stream);
+						ws_builder.set_max_message_size(data.max_request_body_size as usize);
+						let (sender, receiver) = ws_builder.finish();
+
+						let _ = ws::background_task::<HL, WL>(sender, receiver, data).await;
+					});
+
+					response.map(|()| hyper::Body::empty())
+				}
+				Err(e) => {
+					tracing::error!("Could not upgrade connection: {}", e);
+					hyper::Response::new(hyper::Body::from(format!("Could not upgrade connection: {}", e)))
+				}
+			};
+
+			return async { Ok(response) }.boxed();
+		} else {
+			// The request wasn't an upgrade request; let's treat it as a standard HTTP request:
+			let data = http::HandleRequest {
+				remote_addr: self.inner.remote_addr,
+				methods: self.inner.methods.clone(),
+				resources: self.inner.resources.clone(),
+				max_request_body_size: self.inner.max_request_body_size,
+				max_response_body_size: self.inner.max_response_body_size,
+				max_log_length: self.inner.max_log_length,
+				batch_requests_supported: self.inner.batch_requests_supported,
+				logger: self.inner.http_logger.clone(),
+				conn: self.inner.conn.clone(),
+			};
+
+			Box::pin(http::handle_request(request, data).map(Ok))
+		}
+	}
 }
 
 pub(crate) mod response {

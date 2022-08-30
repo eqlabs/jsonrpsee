@@ -5,7 +5,6 @@ use futures_channel::mpsc;
 use futures_util::future::Either;
 use futures_util::io::{BufReader, BufWriter};
 use futures_util::{FutureExt, StreamExt, TryStreamExt};
-use hyper::upgrade::Upgraded;
 use jsonrpsee_core::logger::{self, HttpLogger, WsLogger};
 use jsonrpsee_core::server::helpers::{
 	prepare_error, BatchResponse, BatchResponseBuilder, BoundedSubscriptions, MethodResponse, MethodSink,
