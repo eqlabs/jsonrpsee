@@ -11,7 +11,7 @@ publish = false
 name = "valgrind-test"
 
 [dependencies]
-jsonrpsee = { path = "../jsonrpsee", features = ["ws-client", "ws-server"] }
+jsonrpsee = { path = "../jsonrpsee", features = ["ws-client", "server"] }
 futures = { version = "0.3.14", default-features = false, features = ["std"] }
 tokio = { version = "1.16", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }

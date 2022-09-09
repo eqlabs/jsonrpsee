@@ -26,17 +26,19 @@
 
 //! Example of using proc macro to generate working client and server.
 
+mod helpers;
+
 use std::net::SocketAddr;
 
+use helpers::init_logger;
 use jsonrpsee::core::client::ClientT;
 use jsonrpsee::core::{client::SubscriptionClientT, Error};
 use jsonrpsee::http_client::HttpClientBuilder;
-use jsonrpsee::http_server::HttpServerBuilder;
 use jsonrpsee::rpc_params;
+use jsonrpsee::server::ServerBuilder;
 use jsonrpsee::types::error::{CallError, ErrorCode};
 
 use jsonrpsee::ws_client::*;
-use jsonrpsee::ws_server::WsServerBuilder;
 use serde_json::json;
 
 mod rpc_impl {
@@ -199,23 +201,22 @@ mod rpc_impl {
 use jsonrpsee::core::params::{ArrayParams, ObjectParams};
 use rpc_impl::{RpcClient, RpcServer, RpcServerImpl};
 
-pub async fn websocket_server() -> SocketAddr {
-	let server = WsServerBuilder::default().build("127.0.0.1:0").await.unwrap();
+pub async fn server() -> SocketAddr {
+	let server = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
 	let addr = server.local_addr().unwrap();
 
-	server.start(RpcServerImpl.into_rpc()).unwrap();
+	tokio::spawn(async move {
+		server.start(RpcServerImpl.into_rpc()).unwrap().await;
+	});
 
 	addr
 }
 
 #[tokio::test]
 async fn proc_macros_generic_ws_client_api() {
-	tracing_subscriber::FmtSubscriber::builder()
-		.with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-		.try_init()
-		.expect("setting default subscriber failed");
+	init_logger();
 
-	let server_addr = websocket_server().await;
+	let server_addr = server().await;
 	let server_url = format!("ws://{}", server_addr);
 	let client = WsClientBuilder::default().build(&server_url).await.unwrap();
 
@@ -321,7 +322,7 @@ async fn multiple_blocking_calls_overlap() {
 
 #[tokio::test]
 async fn subscriptions_do_not_work_for_http_servers() {
-	let htserver = HttpServerBuilder::default().build("127.0.0.1:0").await.unwrap();
+	let htserver = ServerBuilder::default().build("127.0.0.1:0").await.unwrap();
 	let addr = htserver.local_addr().unwrap();
 	let htserver_url = format!("http://{}", addr);
 	let _handle = htserver.start(RpcServerImpl.into_rpc()).unwrap();
@@ -336,7 +337,7 @@ async fn subscriptions_do_not_work_for_http_servers() {
 
 #[tokio::test]
 async fn calls_with_bad_params() {
-	let server_addr = websocket_server().await;
+	let server_addr = server().await;
 	let server_url = format!("ws://{}", server_addr);
 	let client = WsClientBuilder::default().build(&server_url).await.unwrap();
 
