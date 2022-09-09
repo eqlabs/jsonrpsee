@@ -125,7 +125,6 @@ jobs:
           command: build
           args: -p jsonrpsee-integration-tests
 
-      # Run with valgrind
       - name: Run valgrind test
         run: valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=all ./target/debug/valgrind-test
 
