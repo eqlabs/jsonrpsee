@@ -27,7 +27,6 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use futures::future;
 use futures::stream::StreamExt;
 use jsonrpsee::core::client::{ClientT, SubscriptionClientT};
 use jsonrpsee::rpc_params;
@@ -44,16 +43,20 @@ fn main() {
 		let url = format!("ws://{}", addr);
 
 		let client = WsClientBuilder::default().build(&url).await.unwrap();
-		let _: String = client.request("say_hello", rpc_params![]).await.unwrap();
-		let _: String = client.request("say_hello_async", rpc_params![]).await.unwrap();
-		let _: String = client.request("blocking", rpc_params![]).await.unwrap();
+		let r1: String = client.request("say_hello", rpc_params![]).await.unwrap();
+		println!("r1 response: {}", r1);
+		let r2: String = client.request("say_hello_async", rpc_params![]).await.unwrap();
+		println!("r2 response: {}", r2);
+		let r3: String = client.request("blocking", rpc_params![]).await.unwrap();
+		println!("r3 response: {}", r3);
 
 		let mut sub = client.subscribe("hi", rpc_params![], "goodbye").await.unwrap();
-		let _: usize = sub.next().await.unwrap().unwrap();
+		let s1: usize = sub.next().await.unwrap().unwrap();
+		println!("s1 response: {}", s1);
 
 		drop(client);
 		// wait for the client to be dropped.
-		tokio::time::sleep(std::time::Duration::from_micros(100)).await;
+		tokio::time::sleep(Duration::from_millis(100)).await;
 		drop(sub);
 
 		handle.stop().unwrap().await
@@ -70,7 +73,7 @@ async fn run_server() -> (SocketAddr, ServerHandle) {
 	module.register_async_method("say_hello_async", |_, _| async { Ok("lo_async") }).unwrap();
 	module
 		.register_blocking_method("blocking", |_, _| {
-			std::thread::sleep(std::time::Duration::from_micros(100));
+			std::thread::sleep(Duration::from_millis(100));
 			Ok("blocking")
 		})
 		.unwrap();
