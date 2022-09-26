@@ -434,6 +434,131 @@ impl<M: Middleware> Server<M> {
 
 		Ok(ServerHandle { handle: Some(handle), stop_sender: tx })
 	}
+
+	/// Start the server methods sets bound to particular paths.
+	pub fn start_with_paths<PathsVsMethods, IntoMethods>(
+		mut self,
+		paths_vs_methods: PathsVsMethods,
+	) -> Result<ServerHandle, Error>
+	where
+		PathsVsMethods: IntoIterator<Item = (Vec<&'static str>, IntoMethods)>,
+		IntoMethods: Into<Methods>,
+	{
+		let max_request_body_size = self.max_request_body_size;
+		let max_response_body_size = self.max_response_body_size;
+		let access_control = self.access_control;
+		let (tx, mut rx) = mpsc::channel(1);
+		let listener = self.listener;
+		let resources = self.resources;
+		let middleware = self.middleware;
+
+		use std::collections::HashMap;
+		use std::sync::Arc;
+
+		// Methods is deep-clone on write, so we need to initialize resources first
+		let paths_vs_methods = paths_vs_methods
+			.into_iter()
+			.map(|(paths, methods)| methods.into().initialize_resources(&resources).map(|methods| (paths, methods)))
+			.collect::<Result<Vec<_>, Error>>()?;
+		// Now do the carthesian product where clone is shallow
+		let paths_vs_methods = paths_vs_methods
+			.into_iter()
+			.flat_map(|(paths, methods)| paths.into_iter().map(move |path| (path, methods.clone())))
+			.collect::<HashMap<_, _>>();
+
+		let paths_with_methods = Arc::new(paths_vs_methods);
+
+		let make_service = make_service_fn(move |_| {
+			let paths_with_methods = paths_with_methods.clone();
+			let access_control = access_control.clone();
+			let resources = resources.clone();
+			let middleware = middleware.clone();
+
+			async move {
+				Ok::<_, HyperError>(service_fn(move |request| {
+					let paths_with_methods = paths_with_methods.clone();
+					let access_control = access_control.clone();
+					let resources = resources.clone();
+					let middleware = middleware.clone();
+
+					// Run some validation on the http request, then read the body and try to deserialize it into one of
+					// two cases: a single RPC request or a batch of RPC requests.
+					async move {
+						if let Err(e) = access_control_is_valid(&access_control, &request) {
+							return Ok::<_, HyperError>(e);
+						}
+
+						// Only `POST` and `OPTIONS` methods are allowed.
+						match *request.method() {
+							// An OPTIONS request is a CORS preflight request. We've done our access check
+							// above so we just need to tell the browser that the request is OK.
+							Method::OPTIONS => {
+								let origin = match http_helpers::read_header_value(request.headers(), "origin") {
+									Some(origin) => origin,
+									None => return Ok(malformed()),
+								};
+								let allowed_headers = access_control.allowed_headers().to_cors_header_value();
+								let allowed_header_bytes = allowed_headers.as_bytes();
+
+								let res = hyper::Response::builder()
+									.header("access-control-allow-origin", origin)
+									.header("access-control-allow-methods", "POST")
+									.header("access-control-allow-headers", allowed_header_bytes)
+									.body(hyper::Body::empty())
+									.unwrap_or_else(|e| {
+										tracing::error!("Error forming preflight response: {}", e);
+										internal_error()
+									});
+
+								Ok(res)
+							}
+							// The actual request. If it's a CORS request we need to remember to add
+							// the access-control-allow-origin header (despite preflight) to allow it
+							// to be read in a browser.
+							Method::POST if content_type_is_json(&request) => {
+								let path = request.uri().path();
+								let methods = match paths_with_methods.get(path) {
+									Some(methods) => methods.clone(),
+									None => return Ok(response::not_found()),
+								};
+
+								let origin = return_origin_if_different_from_host(request.headers()).cloned();
+								let mut res = process_validated_request(
+									request,
+									middleware,
+									methods,
+									resources,
+									max_request_body_size,
+									max_response_body_size,
+								)
+								.await?;
+
+								if let Some(origin) = origin {
+									res.headers_mut().insert("access-control-allow-origin", origin);
+								}
+								Ok(res)
+							}
+							// Error scenarios:
+							Method::POST => Ok(response::unsupported_content_type()),
+							_ => Ok(response::method_not_allowed()),
+						}
+					}
+				}))
+			}
+		});
+
+		let rt = match self.tokio_runtime.take() {
+			Some(rt) => rt,
+			None => tokio::runtime::Handle::current(),
+		};
+
+		let handle = rt.spawn(async move {
+			let server = listener.serve(make_service);
+			let _ = server.with_graceful_shutdown(async move { rx.next().await.map_or((), |_| ()) }).await;
+		});
+
+		Ok(ServerHandle { handle: Some(handle), stop_sender: tx })
+	}
 }
 
 // Checks the origin and host headers. If they both exist, return the origin if it does not match the host.

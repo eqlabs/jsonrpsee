@@ -116,3 +116,12 @@ pub fn unsupported_content_type() -> hyper::Response<hyper::Body> {
 		TEXT,
 	)
 }
+
+/// Create a response for HTTP 404.
+pub fn not_found() -> hyper::Response<hyper::Body> {
+	from_template(
+		hyper::StatusCode::NOT_FOUND,
+		hyper::StatusCode::NOT_FOUND.canonical_reason().expect("canonical reason is defined; qed").to_owned(),
+		TEXT,
+	)
+}
