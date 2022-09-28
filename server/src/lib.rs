@@ -47,3 +47,6 @@ pub use jsonrpsee_core::{id_providers::*, traits::IdProvider};
 pub use jsonrpsee_types as types;
 pub use server::{Builder as ServerBuilder, Server};
 pub use tracing;
+
+pub use server::{ServiceData, TowerService};
+pub use transport::http::response as http_response;

@@ -337,7 +337,8 @@ pub(crate) async fn handle_request<L: Logger>(
 	res
 }
 
-pub(crate) mod response {
+/// FIXME making it public for the example only
+pub mod response {
 	use jsonrpsee_types::error::reject_too_big_request;
 	use jsonrpsee_types::error::{ErrorCode, ErrorResponse};
 	use jsonrpsee_types::Id;
@@ -419,5 +420,10 @@ pub(crate) mod response {
 			"Too many connections. Please try again later.".to_owned(),
 			TEXT,
 		)
+	}
+
+	/// 404
+	pub fn not_found() -> hyper::Response<hyper::Body> {
+		from_template(hyper::StatusCode::NOT_FOUND, hyper::StatusCode::NOT_FOUND.to_string(), TEXT)
 	}
 }

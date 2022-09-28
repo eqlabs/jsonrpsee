@@ -45,7 +45,7 @@ use jsonrpsee_core::id_providers::RandomIntegerIdProvider;
 use jsonrpsee_core::server::helpers::MethodResponse;
 use jsonrpsee_core::server::host_filtering::AllowHosts;
 use jsonrpsee_core::server::resource_limiting::Resources;
-use jsonrpsee_core::server::rpc_module::Methods;
+use jsonrpsee_core::server::rpc_module::{Methods, MethodsPicker};
 use jsonrpsee_core::traits::IdProvider;
 use jsonrpsee_core::{http_helpers, Error, TEN_MB_SIZE_BYTES};
 
@@ -106,7 +106,7 @@ where
 	///
 	/// This will run on the tokio runtime until the server is stopped or the `ServerHandle` is dropped.
 	pub fn start(mut self, methods: impl Into<Methods>) -> Result<ServerHandle, Error> {
-		let methods = methods.into().initialize_resources(&self.resources)?;
+		let methods = methods.into().initialize_resources(&self.resources)?.into();
 		let (stop_tx, stop_rx) = watch::channel(());
 
 		let stop_handle = StopHandle::new(stop_rx);
@@ -119,7 +119,36 @@ where
 		Ok(ServerHandle::new(stop_tx))
 	}
 
-	async fn start_inner(self, methods: Methods, stop_handle: StopHandle) {
+	/// Start responding to connections requests.
+	///
+	/// By default utilizes the first item in `methods` unless instructed otherwise via middleware.
+	/// See `examples/method_router` for more details.
+	///
+	/// Replies with [`Error::MethodNotFound`] if the `methods` collection is empty.
+	///
+	/// This will run on the tokio runtime until the server is stopped or the `ServerHandle` is dropped.
+	pub fn start_with_methods_variants(
+		mut self,
+		methods: impl IntoIterator<Item = Methods>,
+	) -> Result<ServerHandle, Error> {
+		let methods = methods
+			.into_iter()
+			.map(|methods| methods.initialize_resources(&self.resources))
+			.collect::<Result<Vec<Methods>, Error>>()?
+			.into();
+		let (stop_tx, stop_rx) = watch::channel(());
+
+		let stop_handle = StopHandle::new(stop_rx);
+
+		match self.cfg.tokio_runtime.take() {
+			Some(rt) => rt.spawn(self.start_inner(methods, stop_handle)),
+			None => tokio::spawn(self.start_inner(methods, stop_handle)),
+		};
+
+		Ok(ServerHandle::new(stop_tx))
+	}
+
+	async fn start_inner(self, methods: MethodsPicker, stop_handle: StopHandle) {
 		let max_request_body_size = self.cfg.max_request_body_size;
 		let max_response_body_size = self.cfg.max_response_body_size;
 		let max_log_length = self.cfg.max_log_length;
@@ -535,11 +564,12 @@ impl MethodResult {
 
 /// Data required by the server to handle requests.
 #[derive(Debug, Clone)]
-pub(crate) struct ServiceData<L: Logger> {
+pub struct ServiceData<L: Logger> {
 	/// Remote server address.
 	pub(crate) remote_addr: SocketAddr,
 	/// Registered server methods.
-	pub(crate) methods: Methods,
+	/// FIXME making it public for the example only
+	pub methods: MethodsPicker,
 	/// Access control.
 	pub(crate) allow_hosts: AllowHosts,
 	/// Tracker for currently used resources on the server.
@@ -576,7 +606,8 @@ pub(crate) struct ServiceData<L: Logger> {
 /// This is similar to [`hyper::service::service_fn`].
 #[derive(Debug)]
 pub struct TowerService<L: Logger> {
-	inner: ServiceData<L>,
+	/// FIXME making it public for the example only
+	pub inner: ServiceData<L>,
 }
 
 impl<L: Logger> hyper::service::Service<hyper::Request<hyper::Body>> for TowerService<L> {
@@ -647,7 +678,7 @@ impl<L: Logger> hyper::service::Service<hyper::Request<hyper::Body>> for TowerSe
 		} else {
 			// The request wasn't an upgrade request; let's treat it as a standard HTTP request:
 			let data = http::HandleRequest {
-				methods: self.inner.methods.clone(),
+				methods: self.inner.methods.current(),
 				resources: self.inner.resources.clone(),
 				max_request_body_size: self.inner.max_request_body_size,
 				max_response_body_size: self.inner.max_response_body_size,

@@ -501,6 +501,43 @@ impl Methods {
 	}
 }
 
+#[derive(Default, Debug, Clone)]
+/// Wraps an arbitrary number of [`Methods`] instances, pointing to the current [`Methods`] instance
+pub struct MethodsPicker {
+	inner: Arc<Vec<Methods>>,
+	current: Methods,
+}
+
+impl From<Methods> for MethodsPicker {
+	fn from(m: Methods) -> Self {
+		Self { inner: Arc::new(vec![m.clone()]), current: m }
+	}
+}
+
+impl From<Vec<Methods>> for MethodsPicker {
+	fn from(v: Vec<Methods>) -> Self {
+		let current = if v.is_empty() { Methods::default() } else { v[0].clone() };
+		Self { inner: Arc::new(v), current }
+	}
+}
+
+impl MethodsPicker {
+	/// Instruct the picker which [`Methods`] instance to use for the current request
+	pub fn pick<F>(&mut self, f: F)
+	where
+		F: FnOnce(&[Methods]) -> &Methods,
+	{
+		let current = f(&self.inner);
+		self.current = current.clone();
+	}
+
+	/// Points to the currently picked [`Methods`] set.
+	/// Returns [`Methods::default()`] if the internal collection is empty.
+	pub fn current(&self) -> Methods {
+		self.current.clone()
+	}
+}
+
 impl<Context> Deref for RpcModule<Context> {
 	type Target = Methods;
 

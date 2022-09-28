@@ -279,6 +279,8 @@ pub(crate) async fn background_task<L: Logger>(
 		..
 	} = svc;
 
+	let methods = methods.current();
+
 	let (tx, rx) = mpsc::unbounded::<String>();
 	let bounded_subscriptions = BoundedSubscriptions::new(max_subscriptions_per_connection);
 	let sink = MethodSink::new_with_limit(tx, max_response_body_size, max_log_length);
