@@ -420,4 +420,13 @@ pub(crate) mod response {
 			TEXT,
 		)
 	}
+
+	/// Create a response for HTTP 404.
+	pub(crate) fn not_found() -> hyper::Response<hyper::Body> {
+		from_template(
+			hyper::StatusCode::NOT_FOUND,
+			hyper::StatusCode::NOT_FOUND.canonical_reason().expect("canonical reason is defined; qed").to_owned(),
+			TEXT,
+		)
+	}
 }

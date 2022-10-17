@@ -24,6 +24,7 @@
 // IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::future::Future;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
@@ -106,7 +107,7 @@ where
 	///
 	/// This will run on the tokio runtime until the server is stopped or the `ServerHandle` is dropped.
 	pub fn start(mut self, methods: impl Into<Methods>) -> Result<ServerHandle, Error> {
-		let methods = methods.into().initialize_resources(&self.resources)?;
+		let methods = methods.into().initialize_resources(&self.resources)?.into();
 		let (stop_tx, stop_rx) = watch::channel(());
 
 		let stop_handle = StopHandle::new(stop_rx);
@@ -119,7 +120,44 @@ where
 		Ok(ServerHandle::new(stop_tx))
 	}
 
-	async fn start_inner(self, methods: Methods, stop_handle: StopHandle) {
+	/// Start responding to connections requests.
+	///
+	/// This will run on the tokio runtime until the server is stopped or the `ServerHandle` is dropped.
+	pub fn start_with_paths<PathsVsMethods, IntoMethods>(
+		mut self,
+		paths_vs_methods: PathsVsMethods,
+	) -> Result<ServerHandle, Error>
+	where
+		PathsVsMethods: IntoIterator<Item = (Vec<&'static str>, IntoMethods)>,
+		IntoMethods: Into<Methods>,
+	{
+		// Methods is deep-clone on write, so we need to initialize resources first
+		let paths_vs_methods = paths_vs_methods
+			.into_iter()
+			.map(|(paths, methods)| {
+				methods.into().initialize_resources(&self.resources).map(|initialized| (paths, initialized))
+			})
+			.collect::<Result<Vec<_>, Error>>()?;
+		// Now do the carthesian product where clone is shallow
+		let methods = paths_vs_methods
+			.into_iter()
+			.flat_map(|(paths, methods)| paths.into_iter().map(move |path| (path, methods.clone())))
+			.collect::<HashMap<_, _>>()
+			.into();
+
+		let (stop_tx, stop_rx) = watch::channel(());
+
+		let stop_handle = StopHandle::new(stop_rx);
+
+		match self.cfg.tokio_runtime.take() {
+			Some(rt) => rt.spawn(self.start_inner(methods, stop_handle)),
+			None => tokio::spawn(self.start_inner(methods, stop_handle)),
+		};
+
+		Ok(ServerHandle::new(stop_tx))
+	}
+
+	async fn start_inner(self, methods: MethodsVariants, stop_handle: StopHandle) {
 		let max_request_body_size = self.cfg.max_request_body_size;
 		let max_response_body_size = self.cfg.max_response_body_size;
 		let max_log_length = self.cfg.max_log_length;
@@ -533,13 +571,51 @@ impl MethodResult {
 	}
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct MethodsVariants {
+	inner: MethodsVariantsInner,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum MethodsVariantsInner {
+	One(Methods),
+	Many(Arc<HashMap<&'static str, Methods>>),
+}
+
+impl MethodsVariantsInner {
+	fn get(&self, path: &str) -> Option<Methods> {
+		match self {
+			MethodsVariantsInner::One(m) => Some(m.clone()),
+			MethodsVariantsInner::Many(h) => h.get(path).map(Clone::clone),
+		}
+	}
+}
+
+impl MethodsVariants {
+	fn get(&self, path: &str) -> Option<Methods> {
+		self.inner.get(path)
+	}
+}
+
+impl From<Methods> for MethodsVariants {
+	fn from(m: Methods) -> Self {
+		Self { inner: MethodsVariantsInner::One(m) }
+	}
+}
+
+impl From<HashMap<&'static str, Methods>> for MethodsVariants {
+	fn from(h: HashMap<&'static str, Methods>) -> Self {
+		Self { inner: MethodsVariantsInner::Many(Arc::new(h)) }
+	}
+}
+
 /// Data required by the server to handle requests.
 #[derive(Debug, Clone)]
 pub(crate) struct ServiceData<L: Logger> {
 	/// Remote server address.
 	pub(crate) remote_addr: SocketAddr,
 	/// Registered server methods.
-	pub(crate) methods: Methods,
+	pub(crate) methods: MethodsVariants,
 	/// Access control.
 	pub(crate) allow_hosts: AllowHosts,
 	/// Tracker for currently used resources on the server.
@@ -610,6 +686,11 @@ impl<L: Logger> hyper::service::Service<hyper::Request<hyper::Body>> for TowerSe
 			return async { Ok(http::response::host_not_allowed()) }.boxed();
 		}
 
+		let methods = match self.inner.methods.get(request.uri().path()) {
+			Some(methods) => methods.clone(),
+			None => return async { Ok(http::response::not_found()) }.boxed(),
+		};
+
 		if is_upgrade_request(&request) {
 			let mut server = soketto::handshake::http::Server::new();
 
@@ -632,7 +713,7 @@ impl<L: Logger> hyper::service::Service<hyper::Request<hyper::Body>> for TowerSe
 						ws_builder.set_max_message_size(data.max_request_body_size as usize);
 						let (sender, receiver) = ws_builder.finish();
 
-						let _ = ws::background_task::<L>(sender, receiver, data).await;
+						let _ = ws::background_task::<L>(sender, receiver, data, methods).await;
 					});
 
 					response.map(|()| hyper::Body::empty())
@@ -647,7 +728,7 @@ impl<L: Logger> hyper::service::Service<hyper::Request<hyper::Body>> for TowerSe
 		} else {
 			// The request wasn't an upgrade request; let's treat it as a standard HTTP request:
 			let data = http::HandleRequest {
-				methods: self.inner.methods.clone(),
+				methods,
 				resources: self.inner.resources.clone(),
 				max_request_body_size: self.inner.max_request_body_size,
 				max_response_body_size: self.inner.max_response_body_size,
