@@ -260,9 +260,9 @@ pub(crate) async fn background_task<L: Logger>(
 	sender: Sender,
 	mut receiver: Receiver,
 	svc: ServiceData<L>,
+	methods: Methods,
 ) -> Result<(), Error> {
 	let ServiceData {
-		methods,
 		resources,
 		max_request_body_size,
 		max_response_body_size,
